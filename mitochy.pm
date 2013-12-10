@@ -931,14 +931,21 @@ sub trinuc_chh_count {
 
 sub getFilename {
         my ($fh, $type) = @_;
+
+	# Split folder and fullname
         my (@splitname) = split("\/", $fh);
-        my $name = $splitname[@splitname-1];
+        my $fullname = $splitname[@splitname-1];
 	my @tempfolder = pop(@splitname);
         my $folder = join("\/", @tempfolder);
-        @splitname = split(/\./, $name);
-        $name = $splitname[0];
-        return($name) if not defined($type);
-        return($folder, $name) if defined($type);
+
+	# Split fullname and shortname (dot separated)
+        @splitname = split(/\./, $fullname);
+	my $shortname = $splitname[0];
+        return($shortname) 			if not defined($type);
+	return($fullname) 			if defined($type) and $type =~ /full/;
+        return($folder, $shortname)	 	if defined($type) and $type =~ /folder/;
+        return($folder, $fullname) 		if defined($type) and $type =~ /folderfull/;
+        return($folder, $fullname, $shortname) 	if defined($type) and $type =~ /all/;
 }
 
 sub smithwater {

@@ -8,45 +8,38 @@
 # should be fast because it uses cache!
 #########################################
 
-use strict; use warnings; use Cache::FileCache;
-my ($wigfile, $cbool, $cache_root, @bedfile) = @ARGV;
+use strict; use warnings; use Cache::FileCache; use mitochy; use Getopt::Std;
+use vars qw($opt_p $opt_w $opt_t $opt_c $opt_r);
+getopts("ptw:cr:");
+my (@bedfile) = @ARGV;
 
-checksanity($wigfile, $cbool, $cache_root, @bedfile);
+my $wigfile    = $opt_w;
+my $cbool      = defined($opt_c) ? 1 : 0; # If not defined, auto check/auto create. If defined, force create.
+my $cache_root = $opt_r;
 
-print "\n\****************
+checksanity($wigfile, $cache_root, @bedfile);
 
-***** WARNING: MAKE SURE THAT YOUR WIG FILE IS ORDERED BY CHROMOSOME *****
-***** 		   OTHERWISE THIS SCRIPT WILL NOT WORK!              *****
-***** MAKE SURE YOUR BED FILE IS ORDERED BY CHROMOSOME TOO OTHERWISE *****
-*****             IT WILL TAKE VERY LONG TIME                        *****
-***** sort -n command
-
-Your input:
-Wig File 	= $wigfile
-Bed File 	= @bedfile
-Cache Root	= $cache_root
-Cache Option 	= $cbool ";
-print "(reprocess wig file)\n\****************\n\n" if defined($cbool) and $cbool == 1;
-print "(Use existing wigfile cache)\n\****************\n\n" if defined($cbool) and $cbool == 0;
-if ($cbool == 1) {
-	print "Are you sure you want to delete EVERY SINGLE CHROMOSOME CACHE about this wig file? (Y/N)\n";
-	my $respond = <STDIN>;
-	print "Cancelled\n" and exit 0 if ($respond eq "N" or $respond eq "n");
-}
-my (@splitwigname) = split("\/", $wigfile);
-my $wigname = $splitwigname[@splitwigname-1];
-@splitwigname = split(/\./, $wigname);
-$wigname = $splitwigname[0];
+my $wigname = mitochy::getFilename($wigfile);
 
 # Cache setup and process wigfile
 my $cache = new Cache::FileCache();
 $cache -> set_cache_root($cache_root);
+my $fileName = mitochy::getFilename($wigfile, "fullname");
+my $test = $cache->get($fileName);
+
+if ($opt_c or not defined($test)) {
+	if ($opt_t and not $opt_c) {
+		print "Cache for file $fileName does not exists\n\n";
+		exit;
+	}
+	process_wig($wigfile);
+}
+if ($opt_t) {
+	print "Cache for file $fileName exists\n\n";
+	exit;
+}
 
 print "- Loading Wig file $wigfile ... (This might take a couple minutes depending on the size of your Wig file)\n";
-
-if ($cbool == 1) {
-	process_wig($wigfile)
-}
 
 # Process the final result 
 my @output_name;
@@ -63,15 +56,11 @@ foreach my $bedfile (@bedfile) {
 	$bedname = $splitbedname[0];
 	print "- Mapping $bedfile to $wigfile ...";
 
-	#my ($total) = `wc -l $bedfile` =~ /^(\d+)/;
-
-	#my ($total_line) = `wc -l $bedfile` =~ /^(\d+) /;
 	my $count = 0;
 
 	my %final;
 	foreach my $ID (sort {$a <=> $b} keys %bed) {
 		$count++;
-		#printf "Processed %.2f %% of $total ($count / $total)\n", $count / $total * 100 if $count % 1000 == 0;
 		my $bed_index_start_kilo = $bed{$ID}{bed_index_start_kilo};
 		my $bed_index_end_kilo   = $bed{$ID}{bed_index_end_kilo};
 		my $bed_index_start_mega = $bed{$ID}{bed_index_start_mega};
@@ -79,12 +68,9 @@ foreach my $bedfile (@bedfile) {
 		my $start		 = $bed{$ID}{start};
 		my $end			 = $bed{$ID}{end};
 		my $chr			 = $bed{$ID}{chr};
-		#print "\n\nprocessing $chr\n";
 		if ($chr ne $curr_chr) {
-			#print "getting cache from $wigfile\.$chr\.cache\n";
-			my $wig = $cache -> get("$wigfile\.$chr\.cache");
+			my $wig = $cache -> get("$fileName\.$chr\.cache");
 			if (not defined($wig)) {
-				#print "Undefined at chr $chr\n";
 				$wig{$chr} = ();
 			}
 			else {
@@ -93,7 +79,6 @@ foreach my $bedfile (@bedfile) {
 			$curr_chr = $chr;
 		}
 		$curr_chr = $chr;
-		#print "Processing start $start end $end start_index_mega $bed_index_start_mega to end_index_mega $bed_index_end_mega and start_index_kilo $bed_index_start_kilo to end_index_kilo $bed_index_end_kilo\n";
 		$bed{$ID}{val} = 0 if not defined($bed{$ID}{val});
 		for (my $i = $bed_index_start_mega; $i <= $bed_index_end_mega; $i++) {
 			next if not defined($wig{$chr}{$i});
@@ -108,12 +93,17 @@ foreach my $bedfile (@bedfile) {
 					#print "Last! Since bed end $end is smaller than wig start $wigstart\n" and last if $end < $wigstart;
 					#print "Next! Since bed start is already bigger than wig end\n" and next if $start > $wigend;
 					#print "\tDo they overlap? (Curr val = $bed{$ID}{val})\n";
-					if (overlap($wigstart, $wigend, $start, $end) == 1) {
+					if (not $opt_p and overlap($wigstart, $wigend, $start, $end) == 1) {
 						my $overlap = find_overlap($wigstart, $wigend, $start, $end);
 						#print "\tWIG $wigstart-$wigend vs BED $start-$end: Overlap $overlap bp!\n";
 						$bed{$ID}{val}   += $val*($overlap);
 						$bed{$ID}{count} += $overlap;
 					}
+                                        if ($opt_p and intersect($wigstart, $wigend, $start, $end) == 1) {
+                                                for (my $k = $wigstart; $k <= $wigend; $k++) {
+                                                        $bed{$ID}{val} .= "$k,$val\_" if intersect($k, $k, $start, $end) == 1;
+                                                }
+                                        }
 					#print "\tplus $val * overlap total $bed{$ID}{val} count $bed{$ID}{count}\n";
 				}
 			}
@@ -144,13 +134,15 @@ foreach my $bedfile (@bedfile) {
 		if (defined($bed{$ID}{count})) {
 			my $ratio = int($bed{$ID}{val} / $bed{$ID}{count}*1000)/1000;
 			printf OUT "$chr\t$start\t$end\t$ratio\t$stuff\n";
-			#printf OUT "$chr\t$start\t$end\t$ratio\_$bed{$ID}{val}\_$bed{$ID}{count}\t$stuff\n";
+		}
+		elsif ($opt_p) {
+			my $val = defined($bed{$ID}{val}) ? $bed{$ID}{val} : 0;
+			printf OUT "$chr\t$start\t$end\t$val\t$stuff\n";
 		}
 		else {
 			printf OUT "$chr\t$start\t$end\tNA\t$stuff\n";
 		}
 	}
-	#print " Done!\n";
 }
 
 print "\nOutput file(s):\n";
@@ -166,11 +158,11 @@ print "\n";
 sub process_wig {
 	my ($fh, $cbool) = @_;
 
-	#print "Processing Wigfile because cache doesn't exist\n";
+	my ($name) = mitochy::getFilename($fh, "fullname");
+	print "NAME = $name\n";
+
 	my %wig;
 	my $linenumber = 0;
-	#my $total = `wc -l $fh`;
-	#($total) = $total =~ /^(\d+) /;
 	open (my $in, "<", $fh) or die "Cannot read from $fh: $!\n";
 	my $chr = "INIT";
 	my $curr_chr = "INIT";
@@ -185,8 +177,8 @@ sub process_wig {
 			($chr, $span) = $line =~ /chrom=(.+) span=(\d+)/i;
 			$span = 1 if $span == 0;
 			if ($chr ne $curr_chr and $curr_chr ne "INIT") {
-				print "setting $curr_chr cache at $fh\.$curr_chr\.cache\n";
-				$cache -> set("$fh\.$curr_chr\.cache", \%wig);
+				print "setting $curr_chr cache at $name\.$curr_chr\.cache\n";
+				$cache -> set("$name\.$curr_chr\.cache", \%wig);
 				%wig = ();
 			}
 			$curr_chr = $chr;
@@ -201,8 +193,9 @@ sub process_wig {
 	}
 	close $in;
 
-	print "setting $curr_chr cache at $fh\.$curr_chr\.cache\n";
-	$cache -> set("$fh\.$chr\.cache", \%wig);
+	print "setting $curr_chr ($chr) cache at $name\.$curr_chr\.cache\n";
+	$cache -> set("$name\.$curr_chr\.cache", \%wig);
+	$cache -> set($name, "1");
 	%wig = ();
 }
 
@@ -263,44 +256,43 @@ sub process_bed {
 }
 
 sub checksanity {
-	my ($wigfile, $cbool, $cache_root, @bedfile) = @_;
+	my ($wigfile, $cache_root, @bedfile) = @_;
+
+	my $usage = "$0 -w <wigfile> -r <cache root> <bedfiles>
+-t: Test run, check cache, etc but not doing anything.
+-c: Force re-creating wig file cache. Unless specified, it will automatically use the stored one/automatically create if it does not exists.
+-p: Point map
+";
+
 	print "\n\****************\nChecking sanity of input files\n";
-	die "\nError: No input detected\nusage: $0 <wigfile>  <cache_opt [0 to use cache, 1 to ignore/clear]> <cache_root> <multiple_bed_files>\n\n" unless @ARGV > 2;
-	die "\nError: Wigfile not defined\nusage: $0 <wigfile>  <cache_opt [0 to use cache, 1 to ignore/clear]> <cache_root> <multiple_bed_files>\n\n" unless defined($wigfile);
-	die "\nError: Cache root not defined\nusage: $0 <wigfile>  <cache_opt [0 to use cache, 1 to ignore/clear]> <cache_root> <multiple_bed_files>\n\n" unless defined($cache_root);
-	die "\nError: Cache option not defined\nusage: $0 <wigfile>  <cache_opt [0 to use cache, 1 to ignore/clear]> <cache_root> <multiple_bed_files>\n\n" unless defined($cbool);
-	die "\nError: Bedfile not defined\nusage: $0 <wigfile>  <cache_opt [0 to use cache, 1 to ignore/clear]> <cache_root> <multiple_bed_files>\n\n" unless defined($bedfile[0]);
-	die "\nError: Wigfile $wigfile does not exists: $!\n\n"  unless -e $wigfile;
-	die "\nError: Cache root folder $cache_root does not exists: $!\n\n"  unless -d $cache_root;
-
-	# Check cbool must be 0 or 1
-	die "\nError: cbool must be either 0 or 1 (currently: $cbool)\n\n" unless $cbool == 0 or $cbool == 1;
-
-	# Check for wig file name
-	my (@splitwigname) = split("\/", $wigfile);
-	my $wigname = $splitwigname[@splitwigname-1];
-	@splitwigname = split(/\./, $wigname);
-	$wigname = $splitwigname[0];
-
-	if (not defined($wigname)) {
-		die "\nError: If this message ever appear, YWL can have naked juice\n\n";
-	}
-	
+	die "\n$usage\nError: No bed file specified\n\n" 				unless @bedfile >= 1;
+	die "\n$usage\nError: Wigfile not defined\n\n" 					unless defined($wigfile);
+	die "\n$usage\nError: Cache root not defined\n\n" 				unless defined($cache_root);
+	die "\n$usage\nError: Cache option not defined\n\n" 				unless defined($cbool);
+	die "\n$usage\nError: Bedfile not defined\n\n" 					unless defined($bedfile[0]);
+	die "\n$usage\nError: Wigfile $wigfile does not exists: $!\n\n"  		unless -e $wigfile;
+	die "\n$usage\nError: Cache root folder $cache_root does not exists: $!\n\n"  	unless -d $cache_root;
 	foreach my $bedfile (@bedfile) {
-		die "\nError: Bedfile $bedfile does not exists: $!\n\n" unless -e $bedfile;
-
-		# Check for bed file name
-		my @splitbedname = split("\/", $bedfile);
-		my $bedname = $splitbedname[@splitbedname-1];
-		@splitbedname = split(/\./, $bedname);
-		$bedname = $splitbedname[0];
-	
-		if (not defined($bedname)) {
-			die "\nError: If this message ever appear, YWL can have naked juice\n\n";
-		}
+		die "\n$usage\nError: Bedfile $bedfile does not exists: $!\n\n" unless -e $bedfile;
 	}
 
 	print "Sanity check complete. All files seem to be sane.\n\****************\n";
+
+	print "\n\****************
+	
+***** WARNING: MAKE SURE THAT YOUR WIG FILE IS ORDERED BY CHROMOSOME *****
+***** 		   OTHERWISE THIS SCRIPT WILL NOT WORK!              *****
+***** MAKE SURE YOUR BED FILE IS ORDERED BY CHROMOSOME TOO OTHERWISE *****
+*****             IT WILL TAKE VERY LONG TIME                        *****
+***** sort -n command
+	
+Your input:
+Wig File 	= $wigfile
+Bed File 	= @bedfile
+Cache Root	= $cache_root
+
+";
+
 }
 
 sub overlap {
@@ -350,6 +342,13 @@ sub find_overlap {
 	 	die "what is this: $start1 $end1 $start2 $end2\n";
 	}
 	
+}
+
+sub intersect {
+        my ($start1, $end1, $start2, $end2) = @_;
+        return 1 if $start1 >= $start2 and $start1 <= $end2;
+        return 1 if $start2 >= $start1 and $start2 <= $end1;
+        return 0;
 }
 __END__
 Naked juice can only be obtained once
